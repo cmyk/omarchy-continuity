@@ -49,6 +49,10 @@ The snapshot also records tiled/floating state, floating-window geometry,
 pinning, fullscreen mode, and workspace placement. Chromium web apps are
 restored separately from ordinary Chromium browser windows.
 
+During automatic login restoration, Reomarchy uses Omarchy's native OSD to
+show progress and completion feedback. This is an IPC call to the existing
+shell, not plugin code loaded into Quickshell.
+
 Check their status with:
 
 ```bash

@@ -35,6 +35,33 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
 }
 
+restore_status_show() {
+  local attempts=0
+  command -v omarchy-shell >/dev/null 2>&1 || return 0
+  command -v omarchy >/dev/null 2>&1 || return 0
+
+  # The restore timer normally fires after the shell is ready. Keep a short
+  # retry here as a harmless backstop on especially slow logins.
+  while ((attempts < 20)); do
+    if omarchy-shell osd ping >/dev/null 2>&1; then
+      omarchy osd --icon '󰑓' --message 'Restoring session…' --duration 0 >/dev/null 2>&1 || true
+      return 0
+    fi
+    sleep 0.1
+    ((attempts += 1))
+  done
+}
+
+restore_status_close() {
+  command -v omarchy-shell >/dev/null 2>&1 || return 0
+  omarchy-shell -q osd close >/dev/null 2>&1 || true
+}
+
+restore_status_complete() {
+  command -v omarchy >/dev/null 2>&1 || return 0
+  omarchy osd --icon '󰄬' --message 'Session restored' --duration 1800 >/dev/null 2>&1 || true
+}
+
 proc_cmdline() {
   local pid="$1"
   tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed 's/[[:space:]]*$//' || true
@@ -468,6 +495,11 @@ restore() {
   fi
 
   require_command hyprctl
+  if $startup; then
+    restore_status_show
+    trap 'restore_status_close' EXIT
+  fi
+
   groups="$(jq -c '[.clients[] | select(.autoRestore)] | group_by(.groupKey)' "$state_file")"
   while IFS= read -r group; do
     launch_group "$group"
@@ -475,7 +507,12 @@ restore() {
 
   active="$(jq -r '.activeWorkspace.name // .activeWorkspace.id // "1"' "$state_file")"
   hyprctl dispatch "hl.dsp.focus({ workspace = $(lua_quote "$active") })" >/dev/null || true
-  $startup || printf 'Restore pass complete. Applications with their own session engine may still be loading.\n'
+  if $startup; then
+    restore_status_complete
+    trap - EXIT
+  else
+    printf 'Restore pass complete. Applications with their own session engine may still be loading.\n'
+  fi
 }
 
 main() {
