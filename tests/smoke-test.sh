@@ -51,6 +51,7 @@ fi
 
 retry_launch_count="$tmp_dir/retry-launch-count"
 retry_poll_count="$tmp_dir/retry-poll-count"
+retry_visible_after=102
 printf '0\n' > "$retry_launch_count"
 printf '0\n' > "$retry_poll_count"
 live_has_adapter() { return 1; }
@@ -64,12 +65,12 @@ new_addresses_for_class() {
   count="$(< "$retry_poll_count")"
   count="$((count + 1))"
   printf '%d\n' "$count" > "$retry_poll_count"
-  ((count > 101)) && printf '0xwebapp\n'
+  ((count >= retry_visible_after)) && printf '0xwebapp\n'
 }
 sleep() { :; }
 hyprctl() {
   if [[ "${1:-}" == clients && "${2:-}" == -j ]]; then
-    if (( $(< "$retry_poll_count") > 101 )); then
+    if (( $(< "$retry_poll_count") >= retry_visible_after )); then
       printf '%s\n' '[{"address":"0xwebapp","class":"Chromium","title":"X","workspace":{"name":"1"}}]'
     else
       printf '%s\n' '[]'
@@ -81,6 +82,13 @@ hyprctl() {
 retry_group='[{"adapter":"chromium-webapp","class":"Chromium","initialTitle":"x.com_/","title":"X","launch":["omarchy-launch-webapp","https://x.com/"],"workspace":{"id":1,"name":"1"},"geometry":{"at":[0,0],"size":[800,600]},"floating":false,"pinned":false,"fullscreen":0}]'
 launch_group "$retry_group" >/dev/null
 [[ $(< "$retry_launch_count") == 2 ]]
+
+# A window appearing during the settle delay must prevent a duplicate launch.
+printf '0\n' > "$retry_launch_count"
+printf '0\n' > "$retry_poll_count"
+retry_visible_after=101
+launch_group "$retry_group" >/dev/null
+[[ $(< "$retry_launch_count") == 1 ]]
 unset -f live_has_adapter launch_argv_direct new_addresses_for_class sleep hyprctl
 
 XDG_STATE_HOME="$tmp_dir" "$cli" snapshot --quiet
