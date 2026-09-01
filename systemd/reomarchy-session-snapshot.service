@@ -1,0 +1,11 @@
+[Unit]
+Description=Snapshot the Reomarchy desktop session
+Documentation=https://github.com/cmyk/omarchy-session-restore
+After=wayland-wm@hyprland.desktop.service
+PartOf=graphical-session.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/libexec/reomarchy-session snapshot --quiet
+TimeoutStartSec=30
+Nice=10

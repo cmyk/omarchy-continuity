@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically snapshot the Reomarchy desktop session
+Documentation=https://github.com/cmyk/omarchy-session-restore
+PartOf=graphical-session.target
+
+[Timer]
+OnActiveSec=60s
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=reomarchy-session-snapshot.service
+
+[Install]
+WantedBy=graphical-session.target

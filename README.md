@@ -2,7 +2,8 @@
 
 Reopens a useful Omarchy desktop after login: applications return to their
 workspaces, while applications with their own session engines restore their
-internal state.
+internal state. It runs as isolated systemd user services and never loads code
+inside Quickshell, which owns Omarchy's bar and lock screen.
 
 This is an early MVP. It currently understands:
 
@@ -24,17 +25,32 @@ shell state after login would be surprising and unsafe.
 
 `restore` is a dry run unless `--execute` is supplied.
 
-## Install as an Omarchy plugin
+## Install
 
-Once this repository is on GitHub:
+Clone the repository, then run:
 
 ```bash
-omarchy plugin add https://github.com/cmyk/omarchy-session-restore.git --enable
+./install.sh
 ```
 
-The headless service attempts one idempotent restore pass after startup, then
-writes an atomic snapshot every 60 seconds. Already-running applications are
-not duplicated, and an empty desktop never overwrites the last useful state.
+The installer copies the engine to `~/.local/libexec/` and enables two units
+for the Omarchy graphical session:
+
+- `reomarchy-session-restore.service` performs one idempotent restore pass.
+- `reomarchy-session-snapshot.timer` writes an atomic snapshot every 60 seconds.
+
+Already-running applications are not duplicated, and an empty desktop never
+overwrites the last useful state. A failure is contained to these units; it
+cannot crash Quickshell or the lock screen.
+
+Check their status with:
+
+```bash
+systemctl --user status reomarchy-session-restore.service
+systemctl --user status reomarchy-session-snapshot.timer
+```
+
+Uninstall with `./uninstall.sh`. The saved session is deliberately retained.
 
 State is stored at:
 

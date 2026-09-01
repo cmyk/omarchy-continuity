@@ -4,12 +4,17 @@ set -euo pipefail
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cli="$repo_dir/bin/reomarchy-session"
 
-bash -n "$cli"
-jq -e '
-  .schemaVersion == 1
-  and .id == "reomarchy.session"
-  and (.kinds | index("service")) != null
-  and .entryPoints.service == "Service.qml"' "$repo_dir/manifest.json" >/dev/null
+bash -n "$cli" "$repo_dir/install.sh" "$repo_dir/uninstall.sh"
+verify_output="$(systemd-analyze --user verify \
+  "$repo_dir/systemd/reomarchy-session-restore.service" \
+  "$repo_dir/systemd/reomarchy-session-snapshot.service" \
+  "$repo_dir/systemd/reomarchy-session-snapshot.timer" 2>&1 || true)"
+unexpected_verify_output="$(grep -v 'Command .*/\.local/libexec/reomarchy-session is not executable: No such file or directory' \
+  <<<"$verify_output" || true)"
+[[ -z "$unexpected_verify_output" ]] || {
+  printf '%s\n' "$unexpected_verify_output" >&2
+  exit 1
+}
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
