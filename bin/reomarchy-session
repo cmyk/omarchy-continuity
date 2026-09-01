@@ -125,6 +125,13 @@ classify_client() {
   notes="No safe restore adapter yet"
 
   case "${class,,}" in
+    1password)
+      adapter="onepassword"
+      auto_restore=true
+      group_key="app:1password"
+      launch='["gtk-launch", "1password"]'
+      notes="Restores the locked 1Password window through its desktop entry"
+      ;;
     chromium|google-chrome|google-chrome-stable)
       if [[ "$initial_title" == "x.com_/" ]]; then
         adapter="chromium-webapp"
@@ -224,8 +231,8 @@ snapshot() {
         address: ($client.address // ""),
         class: ($client.class // ""),
         initialClass: ($client.initialClass // ""),
-        title: ($client.title // ""),
-        initialTitle: ($client.initialTitle // ""),
+        title: (if $classification.adapter == "onepassword" then "1Password" else ($client.title // "") end),
+        initialTitle: (if $classification.adapter == "onepassword" then "1Password" else ($client.initialTitle // "") end),
         pid: ($client.pid // 0),
         workspace: {
           id: ($client.workspace.id // 0),
@@ -318,6 +325,8 @@ live_has_adapter() {
     chromium-webapp) jq -e --arg class "$class" --arg initialTitle "$initial_title" 'any(.[];
       (((.class // "") | ascii_downcase) == ($class | ascii_downcase))
       and ((.initialTitle // "") == $initialTitle))' <<<"$clients" >/dev/null ;;
+    onepassword) jq -e 'any(.[]; ((.class // "") | ascii_downcase) == "1password")' \
+      <<<"$clients" >/dev/null ;;
     files) jq -e 'any(.[]; (.class // "") == "org.gnome.Nautilus")' <<<"$clients" >/dev/null ;;
     herdr|terminal-command)
       while IFS= read -r pid; do
@@ -341,6 +350,8 @@ launch_argv_direct() {
        . == ["omarchy-launch-browser", "--restore-last-session"]
      elif $adapter == "chromium-webapp" then
        . == ["omarchy-launch-webapp", "https://x.com/"]
+     elif $adapter == "onepassword" then
+       . == ["gtk-launch", "1password"]
      elif $adapter == "files" then
        length == 3 and .[0] == "nautilus" and .[1] == "--new-window" and
        (.[2] == $home or (.[2] | startswith($home + "/")))
@@ -426,13 +437,15 @@ launch_group() {
   fi
 
   before="$(hyprctl clients -j | jq '[.[].address]')"
-  [[ "$adapter" == chromium-webapp ]] && max_launch_attempts=2
+  case "$adapter" in
+    chromium-webapp|onepassword) max_launch_attempts=2 ;;
+  esac
   while ((launch_attempt < max_launch_attempts)); do
     ((launch_attempt += 1))
     if ((launch_attempt == 1)); then
       printf 'launch   %-18s %s\n' "$adapter" "$(jq -r '@sh' <<<"$launch")"
     else
-      printf 'retry    %-18s Chromium is now settled\n' "$adapter"
+      printf 'retry    %-18s application is now settled\n' "$adapter"
     fi
     launch_argv_direct "$adapter" "$launch"
 
@@ -447,9 +460,9 @@ launch_group() {
     ((address_count >= expected)) && break
     ((launch_attempt < max_launch_attempts)) || break
 
-    # Chromium can accept its first restored browser window before it is ready
-    # to process a separate --app request. Give a delayed window time to appear
-    # before retrying, avoiding duplicate web-app windows.
+    # An autostarted application can have a background process before it is
+    # ready to create its saved window. Give a delayed window time to appear
+    # before retrying, avoiding duplicates.
     sleep 5
     mapfile -t addresses < <(new_addresses_for_class "$class" "$before")
     address_count="${#addresses[@]}"

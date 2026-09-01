@@ -11,6 +11,7 @@ This is an early MVP. It currently understands:
 
 - **Herdr** — Herdr restores its saved panes and exact Codex session.
 - **Chromium** — Chromium restores its own windows and tabs.
+- **1Password** — the locked app window returns without reading vault data.
 - **btop** — allow-listed terminal commands are relaunched safely.
 - **Files** — Nautilus reopens a recognizable folder below your home directory.
 
@@ -69,7 +70,10 @@ cannot crash Quickshell or the lock screen.
 
 The snapshot also records tiled/floating state, floating-window geometry,
 pinning, fullscreen mode, and workspace placement. Chromium web apps are
-restored separately from ordinary Chromium browser windows.
+restored separately from ordinary Chromium browser windows. Continuity can
+reopen 1Password, but it never reads vault contents or restores unlock state,
+and it replaces potentially identifying 1Password window titles with a fixed
+generic title in the snapshot.
 
 During automatic login restoration, Continuity uses Omarchy's native OSD to
 show progress and completion feedback. This is an IPC call to the existing
