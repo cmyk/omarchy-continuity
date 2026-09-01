@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly PROGRAM_NAME="reomarchy-session"
+readonly STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/reomarchy-session"
+readonly DEFAULT_STATE_FILE="$STATE_DIR/session.json"
+readonly LOCK_FILE="$STATE_DIR/session.lock"
+
+state_file="$DEFAULT_STATE_FILE"
+quiet=false
+
+usage() {
+  cat <<'EOF'
+Usage:
+  reomarchy-session snapshot [--output PATH] [--quiet]
+  reomarchy-session plan [--input PATH]
+  reomarchy-session restore [--input PATH] [--execute] [--startup]
+
+Commands:
+  snapshot  Save restorable Hyprland windows and their workspaces atomically.
+  plan      Print what would be restored without changing the desktop.
+  restore   Plan by default; pass --execute to launch missing applications.
+
+The default state file is:
+  $XDG_STATE_HOME/reomarchy-session/session.json
+EOF
+}
+
+die() {
+  printf '%s: %s\n' "$PROGRAM_NAME" "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+proc_cmdline() {
+  local pid="$1"
+  tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed 's/[[:space:]]*$//' || true
+}
+
+proc_cwd() {
+  local pid="$1"
+  readlink -e "/proc/$pid/cwd" 2>/dev/null || printf '%s' "$HOME"
+}
+
+proc_tree() {
+  local pid="$1"
+  pstree -ap "$pid" 2>/dev/null || true
+}
+
+terminal_launch_json() {
+  local cwd="$1"
+  local command="$2"
+  jq -cn --arg dir "--dir=$cwd" --arg command "$command" \
+    '["xdg-terminal-exec", $dir, "--", $command]'
+}
+
+classify_client() {
+  local class="$1"
+  local pid="$2"
+  local title="$3"
+  local cwd tree adapter auto_restore group_key launch notes folder
+
+  cwd="$HOME"
+  tree=""
+  adapter="unsupported"
+  auto_restore=false
+  group_key="pid:$pid"
+  launch='[]'
+  notes="No safe restore adapter yet"
+
+  case "${class,,}" in
+    chromium|google-chrome|google-chrome-stable)
+      adapter="chromium"
+      auto_restore=true
+      group_key="browser:chromium"
+      launch='["omarchy-launch-browser", "--restore-last-session"]'
+      notes="Chromium restores its own windows and tabs"
+      ;;
+    org.gnome.nautilus|nautilus)
+      adapter="files"
+      auto_restore=true
+      group_key="files:nautilus"
+      folder="$HOME"
+      case "$title" in
+        Desktop|Documents|Downloads|Music|Pictures|Public|Templates|Videos)
+          folder="$(xdg-user-dir "${title^^}" 2>/dev/null || printf '%s' "$HOME")"
+          ;;
+      esac
+      launch="$(jq -cn --arg folder "$folder" '["nautilus", "--new-window", $folder]')"
+      notes="Restores the last recognizable standard folder"
+      ;;
+    foot|alacritty|kitty|com.mitchellh.ghostty)
+      cwd="$(proc_cwd "$pid")"
+      tree="$(proc_tree "$pid")"
+      if grep -Eq '(^|[^[:alnum:]_])herdr,' <<<"$tree"; then
+        adapter="herdr"
+        auto_restore=true
+        group_key="terminal:herdr"
+        launch="$(terminal_launch_json "$cwd" herdr)"
+        notes="Herdr restores its saved layout and exact agent session"
+      elif grep -Eq '(^|[^[:alnum:]_])btop,' <<<"$tree"; then
+        adapter="terminal-command"
+        auto_restore=true
+        group_key="terminal:btop:$pid"
+        launch="$(terminal_launch_json "$cwd" btop)"
+        notes="Restores allow-listed terminal command btop"
+      else
+        notes="Plain shells are not replayed because their state is ambiguous"
+      fi
+      ;;
+  esac
+
+  jq -cn \
+    --arg adapter "$adapter" \
+    --arg groupKey "$group_key" \
+    --arg cwd "$cwd" \
+    --arg commandLine "$(proc_cmdline "$pid")" \
+    --arg notes "$notes" \
+    --argjson autoRestore "$auto_restore" \
+    --argjson launch "$launch" \
+    '{adapter: $adapter, autoRestore: $autoRestore, groupKey: $groupKey,
+      cwd: $cwd, commandLine: $commandLine, launch: $launch, notes: $notes}'
+}
+
+snapshot() {
+  local output="$DEFAULT_STATE_FILE"
+  local clients active tmp manifest='[]' client class pid title classification item count
+
+  while (($#)); do
+    case "$1" in
+      --output) [[ $# -ge 2 ]] || die "--output needs a path"; output="$2"; shift 2 ;;
+      --quiet) quiet=true; shift ;;
+      -h|--help) usage; return ;;
+      *) die "unknown snapshot option: $1" ;;
+    esac
+  done
+
+  require_command hyprctl
+  require_command jq
+  require_command pstree
+  clients="$(hyprctl clients -j)"
+  active="$(hyprctl activeworkspace -j)"
+
+  while IFS= read -r client; do
+    class="$(jq -r '.class // .initialClass // ""' <<<"$client")"
+    [[ -n "$class" ]] || continue
+    [[ "$class" != org.omarchy.* ]] || continue
+    pid="$(jq -r '.pid // 0' <<<"$client")"
+    [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 0)) || continue
+    title="$(jq -r '.title // ""' <<<"$client")"
+    classification="$(classify_client "$class" "$pid" "$title")"
+    item="$(jq -cn --argjson client "$client" --argjson classification "$classification" '
+      {
+        address: ($client.address // ""),
+        class: ($client.class // ""),
+        initialClass: ($client.initialClass // ""),
+        title: ($client.title // ""),
+        initialTitle: ($client.initialTitle // ""),
+        pid: ($client.pid // 0),
+        workspace: {
+          id: ($client.workspace.id // 0),
+          name: ($client.workspace.name // "")
+        },
+        monitor: ($client.monitor // 0),
+        geometry: {at: ($client.at // [0,0]), size: ($client.size // [0,0])},
+        floating: ($client.floating // false),
+        pinned: ($client.pinned // false),
+        fullscreen: ($client.fullscreen // 0),
+        focusHistoryID: ($client.focusHistoryID // -1)
+      } + $classification')"
+    manifest="$(jq -cn --argjson items "$manifest" --argjson item "$item" '$items + [$item]')"
+  done < <(jq -c '.[] | select(.mapped == true and .hidden != true and (.workspace.id // 0) > 0)' <<<"$clients")
+
+  count="$(jq '[.[] | select(.autoRestore)] | length' <<<"$manifest")"
+  if ((count == 0)); then
+    $quiet || printf 'No restorable windows found; keeping the previous snapshot.\n'
+    return 0
+  fi
+
+  mkdir -p "$STATE_DIR" "$(dirname "$output")"
+  exec 9>"$LOCK_FILE"
+  flock 9
+  tmp="$(mktemp "$(dirname "$output")/.session.XXXXXX")"
+  trap 'rm -f "$tmp"' RETURN
+
+  jq -n \
+    --arg capturedAt "$(date --iso-8601=seconds)" \
+    --arg host "$(hostname)" \
+    --argjson active "$active" \
+    --argjson clients "$manifest" \
+    '{schemaVersion: 1, capturedAt: $capturedAt, host: $host,
+      activeWorkspace: {id: ($active.id // 1), name: ($active.name // "1")},
+      clients: $clients}' >"$tmp"
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$output"
+  trap - RETURN
+  $quiet || printf 'Saved %s restorable windows to %s\n' "$count" "$output"
+}
+
+read_state_option() {
+  while (($#)); do
+    case "$1" in
+      --input) [[ $# -ge 2 ]] || die "--input needs a path"; state_file="$2"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) break ;;
+    esac
+  done
+  REMAINING_ARGS=("$@")
+}
+
+validate_state() {
+  [[ -r "$state_file" ]] || die "no saved session at $state_file"
+  jq -e '.schemaVersion == 1 and (.clients | type == "array")' "$state_file" >/dev/null \
+    || die "invalid session file: $state_file"
+}
+
+plan() {
+  read_state_option "$@"
+  ((${#REMAINING_ARGS[@]} == 0)) || die "unknown plan option: ${REMAINING_ARGS[0]}"
+  validate_state
+
+  printf 'Saved %s — active workspace %s\n\n' \
+    "$(jq -r '.capturedAt' "$state_file")" "$(jq -r '.activeWorkspace.name' "$state_file")"
+  printf '%-10s  %-18s  %-9s  %s\n' WORKSPACE ADAPTER ACTION TITLE
+  jq -r '
+    .clients
+    | sort_by(.workspace.id, .focusHistoryID)
+    | .[]
+    | [(.workspace.name | tostring), .adapter,
+       (if .autoRestore then "restore" else "skip" end), .title]
+    | @tsv' "$state_file" \
+    | while IFS=$'\t' read -r workspace adapter action title; do
+        printf '%-10s  %-18s  %-9s  %s\n' "$workspace" "$adapter" "$action" "$title"
+      done
+}
+
+live_has_adapter() {
+  local adapter="$1"
+  local class="$2"
+  local clients pid tree
+  clients="$(hyprctl clients -j)"
+
+  case "$adapter" in
+    chromium) jq -e --arg class "$class" 'any(.[]; ((.class // "") | ascii_downcase) == ($class | ascii_downcase))' <<<"$clients" >/dev/null ;;
+    files) jq -e 'any(.[]; (.class // "") == "org.gnome.Nautilus")' <<<"$clients" >/dev/null ;;
+    herdr|terminal-command)
+      while IFS= read -r pid; do
+        tree="$(proc_tree "$pid")"
+        if [[ "$adapter" == herdr ]] && grep -Eq '(^|[^[:alnum:]_])herdr,' <<<"$tree"; then return 0; fi
+        if [[ "$adapter" == terminal-command ]] && grep -Eq '(^|[^[:alnum:]_])btop,' <<<"$tree"; then return 0; fi
+      done < <(jq -r '.[] | select((.class // "") | ascii_downcase | IN("foot", "alacritty", "kitty", "com.mitchellh.ghostty")) | .pid' <<<"$clients")
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+shell_join_json() {
+  local arg result=""
+  while IFS= read -r arg; do
+    printf -v arg '%q' "$arg"
+    result+="${result:+ }$arg"
+  done < <(jq -r '.[]' <<<"$1")
+  printf '%s' "$result"
+}
+
+new_addresses_for_class() {
+  local class="$1"
+  local before="$2"
+  hyprctl clients -j | jq -r --arg class "$class" --argjson before "$before" '
+    .[] | select(((.class // "") | ascii_downcase) == ($class | ascii_downcase))
+    | select((.address as $a | $before | index($a)) == null) | .address'
+}
+
+launch_group() {
+  local group="$1"
+  local first adapter class launch command expected before='[]' address_count=0 attempts=0
+  local -a addresses=()
+
+  first="$(jq -c '.[0]' <<<"$group")"
+  adapter="$(jq -r '.adapter' <<<"$first")"
+  class="$(jq -r '.class' <<<"$first")"
+  launch="$(jq -c '.launch' <<<"$first")"
+  expected="$(jq 'length' <<<"$group")"
+
+  if live_has_adapter "$adapter" "$class"; then
+    printf 'skip     %-18s already running\n' "$adapter"
+    return 0
+  fi
+
+  before="$(hyprctl clients -j | jq '[.[].address]')"
+  command="$(shell_join_json "$launch")"
+  printf 'launch   %-18s %s\n' "$adapter" "$command"
+  hyprctl dispatch exec "$command" >/dev/null
+
+  while ((attempts < 100)); do
+    mapfile -t addresses < <(new_addresses_for_class "$class" "$before")
+    address_count="${#addresses[@]}"
+    ((address_count >= expected)) && break
+    sleep 0.1
+    ((attempts += 1))
+  done
+
+  if ((address_count == 0)); then
+    printf 'warning: %s launched but no matching window appeared\n' "$adapter" >&2
+    return 0
+  fi
+
+  local index=0 saved workspace address
+  while IFS= read -r saved && ((index < address_count)); do
+    workspace="$(jq -r '.workspace.name' <<<"$saved")"
+    address="${addresses[$index]}"
+    hyprctl dispatch movetoworkspacesilent "$workspace,address:$address" >/dev/null || true
+    ((index += 1))
+  done < <(jq -c 'sort_by(.focusHistoryID)[]' <<<"$group")
+}
+
+restore() {
+  local execute=false startup=false active groups group
+  read_state_option "$@"
+  set -- "${REMAINING_ARGS[@]}"
+  while (($#)); do
+    case "$1" in
+      --execute) execute=true; shift ;;
+      --startup) startup=true; shift ;;
+      *) die "unknown restore option: $1" ;;
+    esac
+  done
+  validate_state
+
+  if ! $execute; then
+    plan --input "$state_file"
+    printf '\nDry run only. Use restore --execute to launch missing applications.\n'
+    return
+  fi
+
+  require_command hyprctl
+  groups="$(jq -c '[.clients[] | select(.autoRestore)] | group_by(.groupKey)' "$state_file")"
+  while IFS= read -r group; do
+    launch_group "$group"
+  done < <(jq -c '.[]' <<<"$groups")
+
+  active="$(jq -r '.activeWorkspace.name // .activeWorkspace.id // "1"' "$state_file")"
+  hyprctl dispatch workspace "$active" >/dev/null || true
+  $startup || printf 'Restore pass complete. Applications with their own session engine may still be loading.\n'
+}
+
+main() {
+  local command="${1:-}"
+  [[ -n "$command" ]] || { usage; exit 1; }
+  shift
+  case "$command" in
+    snapshot) snapshot "$@" ;;
+    plan) plan "$@" ;;
+    restore) restore "$@" ;;
+    -h|--help|help) usage ;;
+    *) die "unknown command: $command" ;;
+  esac
+}
+
+main "$@"
