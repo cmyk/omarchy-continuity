@@ -410,6 +410,7 @@ launch_group() {
   local group="$1"
   local first adapter class initial_title launch
   local expected before='[]' address_count=0 attempts=0 title_matches=0 live_clients
+  local launch_attempt=0 max_launch_attempts=1
   local -a addresses=()
 
   first="$(jq -c '.[0]' <<<"$group")"
@@ -425,19 +426,39 @@ launch_group() {
   fi
 
   before="$(hyprctl clients -j | jq '[.[].address]')"
-  printf 'launch   %-18s %s\n' "$adapter" "$(jq -r '@sh' <<<"$launch")"
-  launch_argv_direct "$adapter" "$launch"
+  [[ "$adapter" == chromium-webapp ]] && max_launch_attempts=2
+  while ((launch_attempt < max_launch_attempts)); do
+    ((launch_attempt += 1))
+    if ((launch_attempt == 1)); then
+      printf 'launch   %-18s %s\n' "$adapter" "$(jq -r '@sh' <<<"$launch")"
+    else
+      printf 'retry    %-18s Chromium is now settled\n' "$adapter"
+    fi
+    launch_argv_direct "$adapter" "$launch"
 
-  while ((attempts < 100)); do
+    attempts=0
+    while ((attempts < 100)); do
+      mapfile -t addresses < <(new_addresses_for_class "$class" "$before")
+      address_count="${#addresses[@]}"
+      ((address_count >= expected)) && break
+      sleep 0.1
+      ((attempts += 1))
+    done
+    ((address_count >= expected)) && break
+    ((launch_attempt < max_launch_attempts)) || break
+
+    # Chromium can accept its first restored browser window before it is ready
+    # to process a separate --app request. Give a delayed window time to appear
+    # before retrying, avoiding duplicate web-app windows.
+    sleep 5
     mapfile -t addresses < <(new_addresses_for_class "$class" "$before")
     address_count="${#addresses[@]}"
     ((address_count >= expected)) && break
-    sleep 0.1
-    ((attempts += 1))
   done
 
   if ((address_count == 0)); then
-    printf 'warning: %s launched but no matching window appeared\n' "$adapter" >&2
+    printf 'warning: %s launched %d time(s) but no matching window appeared\n' \
+      "$adapter" "$launch_attempt" >&2
     return 0
   fi
 

@@ -8,6 +8,7 @@ bash -n "$cli" "$repo_dir/install.sh" "$repo_dir/uninstall.sh"
 rg -q 'terminal_cwd' "$cli"
 rg -q 'launch_argv_direct' "$cli"
 rg -q 'systemd-run --user --quiet --collect' "$cli"
+rg -q '\[\[ "\$adapter" == chromium-webapp \]\] && max_launch_attempts=2' "$cli"
 if rg -q 'shell_join_json|hl\.dsp\.exec_cmd' "$cli"; then
   printf '%s\n' 'restore commands must not be converted back into shell strings' >&2
   exit 1
@@ -47,6 +48,40 @@ if (PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
   printf '%s\n' 'tampered launch array was accepted' >&2
   exit 1
 fi
+
+retry_launch_count="$tmp_dir/retry-launch-count"
+retry_poll_count="$tmp_dir/retry-poll-count"
+printf '0\n' > "$retry_launch_count"
+printf '0\n' > "$retry_poll_count"
+live_has_adapter() { return 1; }
+launch_argv_direct() {
+  local count
+  count="$(< "$retry_launch_count")"
+  printf '%d\n' "$((count + 1))" > "$retry_launch_count"
+}
+new_addresses_for_class() {
+  local count
+  count="$(< "$retry_poll_count")"
+  count="$((count + 1))"
+  printf '%d\n' "$count" > "$retry_poll_count"
+  ((count > 101)) && printf '0xwebapp\n'
+}
+sleep() { :; }
+hyprctl() {
+  if [[ "${1:-}" == clients && "${2:-}" == -j ]]; then
+    if (( $(< "$retry_poll_count") > 101 )); then
+      printf '%s\n' '[{"address":"0xwebapp","class":"Chromium","title":"X","workspace":{"name":"1"}}]'
+    else
+      printf '%s\n' '[]'
+    fi
+  else
+    printf '%s\n' '{}'
+  fi
+}
+retry_group='[{"adapter":"chromium-webapp","class":"Chromium","initialTitle":"x.com_/","title":"X","launch":["omarchy-launch-webapp","https://x.com/"],"workspace":{"id":1,"name":"1"},"geometry":{"at":[0,0],"size":[800,600]},"floating":false,"pinned":false,"fullscreen":0}]'
+launch_group "$retry_group" >/dev/null
+[[ $(< "$retry_launch_count") == 2 ]]
+unset -f live_has_adapter launch_argv_direct new_addresses_for_class sleep hyprctl
 
 XDG_STATE_HOME="$tmp_dir" "$cli" snapshot --quiet
 state="$tmp_dir/reomarchy-session/session.json"
