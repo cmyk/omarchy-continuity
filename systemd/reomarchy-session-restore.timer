@@ -1,6 +1,6 @@
 [Unit]
 Description=Continuity for Omarchy: restore after login settles
-Documentation=https://github.com/cmyk/omarchy-session-restore
+Documentation=https://github.com/cmyk/omarchy-continuity
 PartOf=graphical-session.target
 
 [Timer]

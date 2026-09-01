@@ -1,6 +1,6 @@
 [Unit]
 Description=Continuity for Omarchy: restore desktop session
-Documentation=https://github.com/cmyk/omarchy-session-restore
+Documentation=https://github.com/cmyk/omarchy-continuity
 Wants=xdg-desktop-portal.service
 After=graphical-session.target xdg-desktop-portal.service
 PartOf=graphical-session.target

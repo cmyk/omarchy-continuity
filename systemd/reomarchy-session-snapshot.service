@@ -1,6 +1,6 @@
 [Unit]
 Description=Continuity for Omarchy: snapshot desktop session
-Documentation=https://github.com/cmyk/omarchy-session-restore
+Documentation=https://github.com/cmyk/omarchy-continuity
 After=wayland-wm@hyprland.desktop.service
 PartOf=graphical-session.target
 

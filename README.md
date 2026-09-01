@@ -17,6 +17,26 @@ This is an early MVP. It currently understands:
 Plain shell terminals are intentionally not replayed. Re-executing arbitrary
 shell state after login would be surprising and unsafe.
 
+Restore commands use strict adapter-specific allowlists and are launched as
+argument arrays without implicit shell execution.
+
+## Continuity and Tableau
+
+[Tableau](https://github.com/novuon/omarchy_tableau) is a complementary Omarchy
+plugin for capturing and switching between multiple named desktops. Loading a
+Tableau is an explicit action: it replaces the current desktop with the chosen
+applications, terminals, services, and layout, and it deliberately does not
+restore one automatically at login.
+
+Continuity keeps one rolling snapshot of the desktop that is actually running
+and restores it automatically after login. It delegates internal state to
+applications such as Chromium and Herdr rather than treating the snapshot as a
+reusable desktop preset.
+
+In short: use Tableau to **save and switch desks**; use Continuity to **resume
+the desk you left**. They overlap in workspace and window reconstruction, but
+their lifecycle and intent are different.
+
 ## Try it without changing anything
 
 ```bash
