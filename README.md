@@ -10,7 +10,7 @@ This is an early MVP. It currently understands:
 - **Herdr** — Herdr restores its saved panes and exact Codex session.
 - **Chromium** — Chromium restores its own windows and tabs.
 - **btop** — allow-listed terminal commands are relaunched safely.
-- **Files** — Nautilus reopens a recognizable standard user folder.
+- **Files** — Nautilus reopens a recognizable folder below your home directory.
 
 Plain shell terminals are intentionally not replayed. Re-executing arbitrary
 shell state after login would be surprising and unsafe.
@@ -43,6 +43,10 @@ Already-running applications are not duplicated, and an empty desktop never
 overwrites the last useful state. A failure is contained to these units; it
 cannot crash Quickshell or the lock screen.
 
+The snapshot also records tiled/floating state, floating-window geometry,
+pinning, fullscreen mode, and workspace placement. Chromium web apps are
+restored separately from ordinary Chromium browser windows.
+
 Check their status with:
 
 ```bash
@@ -64,5 +68,6 @@ State is stored at:
   windows.
 - Chromium owns tab restoration; Reomarchy does not read browser history or
   profile databases.
-- Exact tiled layout reconstruction and shutdown-aware final snapshots are not
-  part of this first version.
+- Tiled windows return in their saved launch order, but complex split ratios and
+  grouped/tabbed container layouts are not reconstructed yet.
+- A shutdown-aware final snapshot is not part of this first version.

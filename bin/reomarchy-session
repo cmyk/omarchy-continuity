@@ -122,9 +122,14 @@ classify_client() {
         Desktop|Documents|Downloads|Music|Pictures|Public|Templates|Videos)
           folder="$(xdg-user-dir "${title^^}" 2>/dev/null || printf '%s' "$HOME")"
           ;;
+        *)
+          # Nautilus uses the basename as its title for ordinary folders.
+          # Restore it when that title resolves unambiguously below $HOME.
+          [[ -d "$HOME/$title" ]] && folder="$HOME/$title"
+          ;;
       esac
       launch="$(jq -cn --arg folder "$folder" '["nautilus", "--new-window", $folder]')"
-      notes="Restores the last recognizable standard folder"
+      notes="Restores the last recognizable folder below the home directory"
       ;;
     foot|alacritty|kitty|com.mitchellh.ghostty)
       cwd="$(terminal_cwd "$pid")"
@@ -320,6 +325,41 @@ new_addresses_for_class() {
     | select((.address as $a | $before | index($a)) == null) | .address'
 }
 
+apply_window_state() {
+  local saved="$1"
+  local address="$2"
+  local selector selector_lua floating fullscreen pinned x y width height
+
+  selector="address:$address"
+  selector_lua="$(lua_quote "$selector")"
+  floating="$(jq -r '.floating // false' <<<"$saved")"
+  fullscreen="$(jq -r '.fullscreen // 0' <<<"$saved")"
+  pinned="$(jq -r '.pinned // false' <<<"$saved")"
+
+  if [[ "$floating" == true ]]; then
+    hyprctl dispatch "hl.dsp.window.float({ action = \"enable\", window = $selector_lua })" >/dev/null || true
+    x="$(jq -r '.geometry.at[0] // 0' <<<"$saved")"
+    y="$(jq -r '.geometry.at[1] // 0' <<<"$saved")"
+    width="$(jq -r '.geometry.size[0] // 0' <<<"$saved")"
+    height="$(jq -r '.geometry.size[1] // 0' <<<"$saved")"
+    if ((width > 0 && height > 0)); then
+      hyprctl dispatch "hl.dsp.window.resize({ x = $width, y = $height, relative = false, window = $selector_lua })" >/dev/null || true
+      hyprctl dispatch "hl.dsp.window.move({ x = $x, y = $y, relative = false, window = $selector_lua })" >/dev/null || true
+    fi
+  else
+    hyprctl dispatch "hl.dsp.window.float({ action = \"disable\", window = $selector_lua })" >/dev/null || true
+  fi
+
+  if [[ "$pinned" == true ]]; then
+    hyprctl dispatch "hl.dsp.window.pin({ action = \"enable\", window = $selector_lua })" >/dev/null || true
+  fi
+
+  case "$fullscreen" in
+    1) hyprctl dispatch "hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"enable\", window = $selector_lua })" >/dev/null || true ;;
+    2|3) hyprctl dispatch "hl.dsp.window.fullscreen({ mode = \"fullscreen\", action = \"enable\", window = $selector_lua })" >/dev/null || true ;;
+  esac
+}
+
 launch_group() {
   local group="$1"
   local first adapter class initial_title launch command launch_workspace command_lua workspace_lua
@@ -403,6 +443,7 @@ launch_group() {
       address_lua="$(lua_quote "$address_selector")"
       hyprctl dispatch "hl.dsp.window.move({ workspace = $workspace_lua, follow = false, window = $address_lua })" >/dev/null || true
     fi
+    apply_window_state "$saved" "$address"
     ((index += 1))
   done < <(jq -c 'sort_by(.focusHistoryID)[]' <<<"$group")
 }
