@@ -33,7 +33,7 @@ Clone the repository, then run:
 ./install.sh
 ```
 
-The installer copies the engine to `~/.local/libexec/` and enables two units
+The installer copies the engine to `~/.local/libexec/` and enables three units
 for the Omarchy graphical session:
 
 - `reomarchy-session-restore.timer` waits briefly for the graphical session and
