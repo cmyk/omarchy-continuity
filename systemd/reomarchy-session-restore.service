@@ -1,5 +1,5 @@
 [Unit]
-Description=Restore the Reomarchy desktop session
+Description=Continuity for Omarchy: restore desktop session
 Documentation=https://github.com/cmyk/omarchy-session-restore
 Wants=xdg-desktop-portal.service
 After=graphical-session.target xdg-desktop-portal.service

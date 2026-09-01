@@ -26,5 +26,5 @@ systemctl --user daemon-reload
 systemctl --user disable reomarchy-session-restore.service 2>/dev/null || true
 systemctl --user enable --now reomarchy-session-restore.timer reomarchy-session-snapshot.timer
 
-printf '%s\n' 'Installed Reomarchy Session Restore outside Quickshell.'
+printf '%s\n' 'Installed Continuity for Omarchy outside Quickshell.'
 printf '%s\n' 'Inspect it with: systemctl --user status reomarchy-session-restore.timer reomarchy-session-restore.service reomarchy-session-snapshot.timer'

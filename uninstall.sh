@@ -12,5 +12,5 @@ rm -f \
   "$HOME/.local/libexec/reomarchy-session"
 systemctl --user daemon-reload
 
-printf '%s\n' 'Uninstalled Reomarchy Session Restore.'
+printf '%s\n' 'Uninstalled Continuity for Omarchy.'
 printf '%s\n' 'The saved session was kept in ~/.local/state/reomarchy-session/.'
