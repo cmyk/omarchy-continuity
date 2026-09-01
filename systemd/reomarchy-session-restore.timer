@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore the Reomarchy desktop session after login settles
+Documentation=https://github.com/cmyk/omarchy-session-restore
+PartOf=graphical-session.target
+
+[Timer]
+OnActiveSec=10s
+AccuracySec=1s
+Unit=reomarchy-session-restore.service
+
+[Install]
+WantedBy=graphical-session.target

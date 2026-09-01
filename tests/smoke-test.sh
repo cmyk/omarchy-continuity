@@ -8,6 +8,7 @@ bash -n "$cli" "$repo_dir/install.sh" "$repo_dir/uninstall.sh"
 rg -q 'terminal_cwd' "$cli"
 verify_output="$(systemd-analyze --user verify \
   "$repo_dir/systemd/reomarchy-session-restore.service" \
+  "$repo_dir/systemd/reomarchy-session-restore.timer" \
   "$repo_dir/systemd/reomarchy-session-snapshot.service" \
   "$repo_dir/systemd/reomarchy-session-snapshot.timer" 2>&1 || true)"
 unexpected_verify_output="$(grep -v 'Command .*/\.local/libexec/reomarchy-session is not executable: No such file or directory' \

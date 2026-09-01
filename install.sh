@@ -15,13 +15,16 @@ fi
 install -Dm755 "$repo_dir/bin/reomarchy-session" "$libexec_dir/reomarchy-session"
 install -Dm644 "$repo_dir/systemd/reomarchy-session-restore.service" \
   "$user_unit_dir/reomarchy-session-restore.service"
+install -Dm644 "$repo_dir/systemd/reomarchy-session-restore.timer" \
+  "$user_unit_dir/reomarchy-session-restore.timer"
 install -Dm644 "$repo_dir/systemd/reomarchy-session-snapshot.service" \
   "$user_unit_dir/reomarchy-session-snapshot.service"
 install -Dm644 "$repo_dir/systemd/reomarchy-session-snapshot.timer" \
   "$user_unit_dir/reomarchy-session-snapshot.timer"
 
 systemctl --user daemon-reload
-systemctl --user enable --now reomarchy-session-restore.service reomarchy-session-snapshot.timer
+systemctl --user disable reomarchy-session-restore.service 2>/dev/null || true
+systemctl --user enable --now reomarchy-session-restore.timer reomarchy-session-snapshot.timer
 
 printf '%s\n' 'Installed Reomarchy Session Restore outside Quickshell.'
-printf '%s\n' 'Inspect it with: systemctl --user status reomarchy-session-restore.service reomarchy-session-snapshot.timer'
+printf '%s\n' 'Inspect it with: systemctl --user status reomarchy-session-restore.timer reomarchy-session-restore.service reomarchy-session-snapshot.timer'

@@ -36,7 +36,9 @@ Clone the repository, then run:
 The installer copies the engine to `~/.local/libexec/` and enables two units
 for the Omarchy graphical session:
 
-- `reomarchy-session-restore.service` performs one idempotent restore pass.
+- `reomarchy-session-restore.timer` waits briefly for the graphical session and
+  desktop portal, then triggers one idempotent restore pass.
+- `reomarchy-session-restore.service` performs that restore pass.
 - `reomarchy-session-snapshot.timer` writes an atomic snapshot every 60 seconds.
 
 Already-running applications are not duplicated, and an empty desktop never
@@ -50,6 +52,7 @@ restored separately from ordinary Chromium browser windows.
 Check their status with:
 
 ```bash
+systemctl --user status reomarchy-session-restore.timer
 systemctl --user status reomarchy-session-restore.service
 systemctl --user status reomarchy-session-snapshot.timer
 ```

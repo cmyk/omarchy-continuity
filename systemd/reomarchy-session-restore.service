@@ -1,15 +1,12 @@
 [Unit]
 Description=Restore the Reomarchy desktop session
 Documentation=https://github.com/cmyk/omarchy-session-restore
-After=wayland-wm@hyprland.desktop.service xdg-desktop-portal.service
+Wants=xdg-desktop-portal.service
+After=graphical-session.target xdg-desktop-portal.service
 PartOf=graphical-session.target
 
 [Service]
 Type=oneshot
-ExecStartPre=/usr/bin/sleep 4
 ExecStart=%h/.local/libexec/reomarchy-session restore --execute --startup
 TimeoutStartSec=90
 Nice=10
-
-[Install]
-WantedBy=graphical-session.target
