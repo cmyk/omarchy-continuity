@@ -5,6 +5,7 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cli="$repo_dir/bin/reomarchy-session"
 
 bash -n "$cli" "$repo_dir/install.sh" "$repo_dir/uninstall.sh"
+rg -q 'terminal_cwd' "$cli"
 verify_output="$(systemd-analyze --user verify \
   "$repo_dir/systemd/reomarchy-session-restore.service" \
   "$repo_dir/systemd/reomarchy-session-snapshot.service" \

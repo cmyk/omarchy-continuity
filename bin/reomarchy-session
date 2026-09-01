@@ -50,6 +50,31 @@ proc_tree() {
   pstree -ap "$pid" 2>/dev/null || true
 }
 
+terminal_cwd() {
+  local pid="$1"
+  local arg next_is_dir=false child
+  local -a args=()
+
+  mapfile -d '' -t args <"/proc/$pid/cmdline" 2>/dev/null || true
+  for arg in "${args[@]}"; do
+    if $next_is_dir; then
+      [[ -d "$arg" ]] && { printf '%s' "$arg"; return; }
+      next_is_dir=false
+    fi
+    case "$arg" in
+      --working-directory=*)
+        arg="${arg#--working-directory=}"
+        [[ -d "$arg" ]] && { printf '%s' "$arg"; return; }
+        ;;
+      --working-directory|--dir|-d) next_is_dir=true ;;
+    esac
+  done
+
+  child="$(pgrep -P "$pid" | head -n 1 || true)"
+  [[ -n "$child" ]] && { proc_cwd "$child"; return; }
+  proc_cwd "$pid"
+}
+
 terminal_launch_json() {
   local cwd="$1"
   local command="$2"
@@ -93,7 +118,7 @@ classify_client() {
       notes="Restores the last recognizable standard folder"
       ;;
     foot|alacritty|kitty|com.mitchellh.ghostty)
-      cwd="$(proc_cwd "$pid")"
+      cwd="$(terminal_cwd "$pid")"
       tree="$(proc_tree "$pid")"
       if grep -Eq '(^|[^[:alnum:]_])herdr,' <<<"$tree"; then
         adapter="herdr"
@@ -267,6 +292,10 @@ shell_join_json() {
   printf '%s' "$result"
 }
 
+lua_quote() {
+  jq -Rn --arg value "$1" '$value'
+}
+
 new_addresses_for_class() {
   local class="$1"
   local before="$2"
@@ -277,13 +306,15 @@ new_addresses_for_class() {
 
 launch_group() {
   local group="$1"
-  local first adapter class launch command expected before='[]' address_count=0 attempts=0
+  local first adapter class launch command launch_workspace command_lua workspace_lua
+  local expected before='[]' address_count=0 attempts=0
   local -a addresses=()
 
   first="$(jq -c '.[0]' <<<"$group")"
   adapter="$(jq -r '.adapter' <<<"$first")"
   class="$(jq -r '.class' <<<"$first")"
   launch="$(jq -c '.launch' <<<"$first")"
+  launch_workspace="$(jq -r '.workspace.name' <<<"$first")"
   expected="$(jq 'length' <<<"$group")"
 
   if live_has_adapter "$adapter" "$class"; then
@@ -293,8 +324,10 @@ launch_group() {
 
   before="$(hyprctl clients -j | jq '[.[].address]')"
   command="$(shell_join_json "$launch")"
+  command_lua="$(lua_quote "$command")"
+  workspace_lua="$(lua_quote "$launch_workspace")"
   printf 'launch   %-18s %s\n' "$adapter" "$command"
-  hyprctl dispatch exec "$command" >/dev/null
+  hyprctl dispatch "hl.dsp.exec_cmd($command_lua, { workspace = $workspace_lua })" >/dev/null
 
   while ((attempts < 100)); do
     mapfile -t addresses < <(new_addresses_for_class "$class" "$before")
@@ -309,11 +342,17 @@ launch_group() {
     return 0
   fi
 
-  local index=0 saved workspace address
+  local index=0 saved workspace address address_selector workspace_lua address_lua current_workspace
   while IFS= read -r saved && ((index < address_count)); do
     workspace="$(jq -r '.workspace.name' <<<"$saved")"
     address="${addresses[$index]}"
-    hyprctl dispatch movetoworkspacesilent "$workspace,address:$address" >/dev/null || true
+    current_workspace="$(hyprctl clients -j | jq -r --arg address "$address" '.[] | select(.address == $address) | .workspace.name')"
+    if [[ "$current_workspace" != "$workspace" ]]; then
+      address_selector="address:$address"
+      workspace_lua="$(lua_quote "$workspace")"
+      address_lua="$(lua_quote "$address_selector")"
+      hyprctl dispatch "hl.dsp.window.move({ workspace = $workspace_lua, follow = false, window = $address_lua })" >/dev/null || true
+    fi
     ((index += 1))
   done < <(jq -c 'sort_by(.focusHistoryID)[]' <<<"$group")
 }
@@ -344,7 +383,7 @@ restore() {
   done < <(jq -c '.[]' <<<"$groups")
 
   active="$(jq -r '.activeWorkspace.name // .activeWorkspace.id // "1"' "$state_file")"
-  hyprctl dispatch workspace "$active" >/dev/null || true
+  hyprctl dispatch "hl.dsp.focus({ workspace = $(lua_quote "$active") })" >/dev/null || true
   $startup || printf 'Restore pass complete. Applications with their own session engine may still be loading.\n'
 }
 
