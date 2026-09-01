@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodically snapshot the Reomarchy desktop session
+Description=Continuity for Omarchy: periodically snapshot desktop session
 Documentation=https://github.com/cmyk/omarchy-session-restore
 PartOf=graphical-session.target
 

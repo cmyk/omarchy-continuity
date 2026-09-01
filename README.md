@@ -1,9 +1,11 @@
-# Reomarchy Session Restore
+# Continuity for Omarchy
 
-Reopens a useful Omarchy desktop after login: applications return to their
-workspaces, while applications with their own session engines restore their
-internal state. It runs as isolated systemd user services and never loads code
-inside Quickshell, which owns Omarchy's bar and lock screen.
+**A Reomarchy project.**
+
+Continuity reopens a useful Omarchy desktop after login: applications return
+to their workspaces, while applications with their own session engines restore
+their internal state. It runs as isolated systemd user services and never loads
+code inside Quickshell, which owns Omarchy's bar and lock screen.
 
 This is an early MVP. It currently understands:
 
@@ -49,7 +51,7 @@ The snapshot also records tiled/floating state, floating-window geometry,
 pinning, fullscreen mode, and workspace placement. Chromium web apps are
 restored separately from ordinary Chromium browser windows.
 
-During automatic login restoration, Reomarchy uses Omarchy's native OSD to
+During automatic login restoration, Continuity uses Omarchy's native OSD to
 show progress and completion feedback. This is an IPC call to the existing
 shell, not plugin code loaded into Quickshell.
 
@@ -73,7 +75,7 @@ State is stored at:
 
 - Workspace placement is best-effort while applications are still creating
   windows.
-- Chromium owns tab restoration; Reomarchy does not read browser history or
+- Chromium owns tab restoration; Continuity does not read browser history or
   profile databases.
 - Tiled windows return in their saved launch order, but complex split ratios and
   grouped/tabbed container layouts are not reconstructed yet.

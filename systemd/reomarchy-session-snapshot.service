@@ -1,5 +1,5 @@
 [Unit]
-Description=Snapshot the Reomarchy desktop session
+Description=Continuity for Omarchy: snapshot desktop session
 Documentation=https://github.com/cmyk/omarchy-session-restore
 After=wayland-wm@hyprland.desktop.service
 PartOf=graphical-session.target

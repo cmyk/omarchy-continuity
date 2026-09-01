@@ -1,5 +1,5 @@
 [Unit]
-Description=Restore the Reomarchy desktop session after login settles
+Description=Continuity for Omarchy: restore after login settles
 Documentation=https://github.com/cmyk/omarchy-session-restore
 PartOf=graphical-session.target
 
