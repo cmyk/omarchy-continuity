@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+: "${REOMARCHY_TEST_CAPTURE:?}"
+printf '%s\0' "$@" > "$REOMARCHY_TEST_CAPTURE"

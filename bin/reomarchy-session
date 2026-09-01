@@ -331,13 +331,32 @@ live_has_adapter() {
   esac
 }
 
-shell_join_json() {
-  local arg result=""
-  while IFS= read -r arg; do
-    printf -v arg '%q' "$arg"
-    result+="${result:+ }$arg"
-  done < <(jq -r '.[]' <<<"$1")
-  printf '%s' "$result"
+launch_argv_direct() {
+  local adapter="$1" launch="$2" unit
+  local -a argv=()
+
+  jq -e --arg adapter "$adapter" --arg home "$HOME" '
+    type == "array" and length > 0 and all(.[]; type == "string") and
+    (if $adapter == "chromium" then
+       . == ["omarchy-launch-browser", "--restore-last-session"]
+     elif $adapter == "chromium-webapp" then
+       . == ["omarchy-launch-webapp", "https://x.com/"]
+     elif $adapter == "files" then
+       length == 3 and .[0] == "nautilus" and .[1] == "--new-window" and
+       (.[2] == $home or (.[2] | startswith($home + "/")))
+     elif $adapter == "herdr" or $adapter == "terminal-command" then
+       length == 4 and .[0] == "xdg-terminal-exec" and .[2] == "--" and
+       (.[1] == "--dir=" + $home or (.[1] | startswith("--dir=" + $home + "/"))) and
+       (if $adapter == "herdr" then .[3] == "herdr" else .[3] == "btop" end)
+     else false end)' <<<"$launch" >/dev/null \
+    || die "refusing invalid $adapter launch command in $state_file"
+
+  mapfile -t argv < <(jq -r '.[]' <<<"$launch")
+
+  unit="reomarchy-session-launch-$(date +%s%N)"
+  systemd-run --user --quiet --collect --unit="$unit" \
+    --property=StandardOutput=null --property=StandardError=null \
+    -- "${argv[@]}"
 }
 
 lua_quote() {
@@ -389,7 +408,7 @@ apply_window_state() {
 
 launch_group() {
   local group="$1"
-  local first adapter class initial_title launch command launch_workspace command_lua workspace_lua
+  local first adapter class initial_title launch
   local expected before='[]' address_count=0 attempts=0 title_matches=0 live_clients
   local -a addresses=()
 
@@ -398,7 +417,6 @@ launch_group() {
   class="$(jq -r '.class' <<<"$first")"
   initial_title="$(jq -r '.initialTitle // ""' <<<"$first")"
   launch="$(jq -c '.launch' <<<"$first")"
-  launch_workspace="$(jq -r '.workspace.name' <<<"$first")"
   expected="$(jq 'length' <<<"$group")"
 
   if live_has_adapter "$adapter" "$class" "$initial_title"; then
@@ -407,11 +425,8 @@ launch_group() {
   fi
 
   before="$(hyprctl clients -j | jq '[.[].address]')"
-  command="$(shell_join_json "$launch")"
-  command_lua="$(lua_quote "$command")"
-  workspace_lua="$(lua_quote "$launch_workspace")"
-  printf 'launch   %-18s %s\n' "$adapter" "$command"
-  hyprctl dispatch "hl.dsp.exec_cmd($command_lua, { workspace = $workspace_lua })" >/dev/null
+  printf 'launch   %-18s %s\n' "$adapter" "$(jq -r '@sh' <<<"$launch")"
+  launch_argv_direct "$adapter" "$launch"
 
   while ((attempts < 100)); do
     mapfile -t addresses < <(new_addresses_for_class "$class" "$before")
@@ -495,6 +510,7 @@ restore() {
   fi
 
   require_command hyprctl
+  require_command systemd-run
   if $startup; then
     restore_status_show
     trap 'restore_status_close' EXIT
@@ -528,4 +544,6 @@ main() {
   esac
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi
