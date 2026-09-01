@@ -8,6 +8,7 @@ readonly LOCK_FILE="$STATE_DIR/session.lock"
 
 state_file="$DEFAULT_STATE_FILE"
 quiet=false
+declare -A RESTORED_ADDRESS_BY_SAVED=()
 
 usage() {
   cat <<'EOF'
@@ -64,7 +65,8 @@ restore_status_complete() {
 
 proc_cmdline() {
   local pid="$1"
-  tr '\0' ' ' <"/proc/$pid/cmdline" 2>/dev/null | sed 's/[[:space:]]*$//' || true
+  [[ -r "/proc/$pid/cmdline" ]] || return 0
+  tr '\0' ' ' <"/proc/$pid/cmdline" | sed 's/[[:space:]]*$//' || true
 }
 
 proc_cwd() {
@@ -82,7 +84,9 @@ terminal_cwd() {
   local arg next_is_dir=false child
   local -a args=()
 
-  mapfile -d '' -t args <"/proc/$pid/cmdline" 2>/dev/null || true
+  if [[ -r "/proc/$pid/cmdline" ]]; then
+    mapfile -d '' -t args <"/proc/$pid/cmdline" || true
+  fi
   for arg in "${args[@]}"; do
     if $next_is_dir; then
       [[ -d "$arg" ]] && { printf '%s' "$arg"; return; }
@@ -109,12 +113,87 @@ terminal_launch_json() {
     '["xdg-terminal-exec", $dir, "--", $command]'
 }
 
+plain_shell_cwd() {
+  local terminal_pid="$1" child executable cwd
+  local -a children=() grandchildren=()
+
+  mapfile -t children < <(pgrep -P "$terminal_pid" 2>/dev/null || true)
+  ((${#children[@]} == 1)) || return 1
+  child="${children[0]}"
+  executable="$(basename -- "$(readlink -f "/proc/$child/exe" 2>/dev/null || true)")"
+  case "$executable" in
+    bash|dash|fish|nu|zsh) ;;
+    *) return 1 ;;
+  esac
+  mapfile -t grandchildren < <(pgrep -P "$child" 2>/dev/null || true)
+  ((${#grandchildren[@]} == 0)) || return 1
+  cwd="$(proc_cwd "$child")"
+  [[ "$cwd" == "$HOME" || "$cwd" == "$HOME/"* ]] || cwd="$HOME"
+  printf '%s' "$cwd"
+}
+
+desktop_data_dirs() {
+  local -a system_dirs=()
+  local directory
+  printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}"
+  IFS=: read -r -a system_dirs <<<"${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
+  for directory in "${system_dirs[@]}"; do
+    [[ -n "$directory" ]] && printf '%s\n' "$directory"
+  done
+}
+
+desktop_entry_path() {
+  local desktop_id="$1" directory path
+  [[ "$desktop_id" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  while IFS= read -r directory; do
+    path="$directory/applications/$desktop_id.desktop"
+    [[ -f "$path" ]] || continue
+    grep -Fqx 'Type=Application' "$path" 2>/dev/null || continue
+    grep -Eq '^(Hidden|NoDisplay)=true$' "$path" 2>/dev/null && continue
+    printf '%s' "$path"
+    return 0
+  done < <(desktop_data_dirs)
+  return 1
+}
+
+desktop_id_for_class() {
+  local directory file desktop_id
+  local -a application_dirs=()
+  if [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && desktop_entry_path "$1" >/dev/null; then
+    printf '%s' "$1"
+    return 0
+  fi
+  while IFS= read -r directory; do
+    [[ -d "$directory/applications" ]] || continue
+    application_dirs+=("$directory/applications")
+    file="$(find "$directory/applications" -maxdepth 1 -type f -iname "$1.desktop" -print -quit 2>/dev/null)"
+    if [[ -n "$file" ]]; then
+      desktop_id="$(basename -- "$file" .desktop)"
+      if desktop_entry_path "$desktop_id" >/dev/null; then
+        printf '%s' "$desktop_id"
+        return 0
+      fi
+    fi
+  done < <(desktop_data_dirs)
+
+  ((${#application_dirs[@]} > 0)) || return 1
+  command -v rg >/dev/null 2>&1 || return 1
+  while IFS= read -r file; do
+    desktop_id="$(basename -- "$file" .desktop)"
+    if desktop_entry_path "$desktop_id" >/dev/null; then
+      printf '%s' "$desktop_id"
+      return 0
+    fi
+  done < <(rg -l -i -F -x --glob '*.desktop' "StartupWMClass=$1" "${application_dirs[@]}" 2>/dev/null || true)
+  return 1
+}
+
 classify_client() {
   local class="$1"
   local pid="$2"
   local title="$3"
   local initial_title="$4"
-  local cwd tree adapter auto_restore group_key launch notes folder
+  local cwd tree adapter auto_restore group_key launch notes folder desktop_id
 
   cwd="$HOME"
   tree=""
@@ -180,8 +259,23 @@ classify_client() {
         group_key="terminal:btop:$pid"
         launch="$(terminal_launch_json "$cwd" btop)"
         notes="Restores allow-listed terminal command btop"
+      elif cwd="$(plain_shell_cwd "$pid")"; then
+        adapter="terminal-shell"
+        auto_restore=true
+        group_key="terminal:shell:${class,,}"
+        launch="$(jq -cn --arg dir "--dir=$cwd" '["xdg-terminal-exec", $dir]')"
+        notes="Restores a clean shell in its saved working directory without replaying commands"
       else
-        notes="Plain shells are not replayed because their state is ambiguous"
+        notes="Terminal has a non-allow-listed child command and is not replayed"
+      fi
+      ;;
+    *)
+      if desktop_id="$(desktop_id_for_class "$class")"; then
+        adapter="desktop-app"
+        auto_restore=true
+        group_key="desktop:$desktop_id"
+        launch="$(jq -cn --arg desktopId "$desktop_id" '["gtk-launch", $desktopId]')"
+        notes="Restores an installed desktop application through its validated desktop ID"
       fi
       ;;
   esac
@@ -327,6 +421,9 @@ live_has_adapter() {
       and ((.initialTitle // "") == $initialTitle))' <<<"$clients" >/dev/null ;;
     onepassword) jq -e 'any(.[]; ((.class // "") | ascii_downcase) == "1password")' \
       <<<"$clients" >/dev/null ;;
+    desktop-app) jq -e --arg class "$class" 'any(.[];
+      ((.class // "") | ascii_downcase) == ($class | ascii_downcase))' \
+      <<<"$clients" >/dev/null ;;
     files) jq -e 'any(.[]; (.class // "") == "org.gnome.Nautilus")' <<<"$clients" >/dev/null ;;
     herdr|terminal-command)
       while IFS= read -r pid; do
@@ -352,9 +449,15 @@ launch_argv_direct() {
        . == ["omarchy-launch-webapp", "https://x.com/"]
      elif $adapter == "onepassword" then
        . == ["gtk-launch", "1password"]
+     elif $adapter == "desktop-app" then
+       length == 2 and .[0] == "gtk-launch" and
+       (.[1] | test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
      elif $adapter == "files" then
        length == 3 and .[0] == "nautilus" and .[1] == "--new-window" and
        (.[2] == $home or (.[2] | startswith($home + "/")))
+     elif $adapter == "terminal-shell" then
+       length == 2 and .[0] == "xdg-terminal-exec" and
+       (.[1] == "--dir=" + $home or (.[1] | startswith("--dir=" + $home + "/")))
      elif $adapter == "herdr" or $adapter == "terminal-command" then
        length == 4 and .[0] == "xdg-terminal-exec" and .[2] == "--" and
        (.[1] == "--dir=" + $home or (.[1] | startswith("--dir=" + $home + "/"))) and
@@ -362,7 +465,12 @@ launch_argv_direct() {
      else false end)' <<<"$launch" >/dev/null \
     || die "refusing invalid $adapter launch command in $state_file"
 
-  mapfile -t argv < <(jq -r '.[]' <<<"$launch")
+  mapfile -d '' -t argv < <(jq -j '.[] | ., "\u0000"' <<<"$launch")
+
+  if [[ "$adapter" == desktop-app ]]; then
+    desktop_entry_path "${argv[1]}" >/dev/null \
+      || die "refusing missing desktop ID ${argv[1]} in $state_file"
+  fi
 
   unit="reomarchy-session-launch-$(date +%s%N)"
   systemd-run --user --quiet --collect --unit="$unit" \
@@ -382,6 +490,36 @@ new_addresses_for_class() {
     | select((.address as $a | $before | index($a)) == null) | .address'
 }
 
+missing_terminal_shell_group() {
+  local group="$1" clients saved saved_class saved_cwd saved_workspace
+  local address pid workspace live_class live_cwd candidate missing='[]'
+  local -A used_addresses=()
+  clients="$(hyprctl clients -j)"
+
+  while IFS= read -r saved; do
+    saved_class="$(jq -r '.class' <<<"$saved")"
+    saved_cwd="$(jq -r '.cwd' <<<"$saved")"
+    saved_workspace="$(jq -r '.workspace.name' <<<"$saved")"
+    candidate=""
+    while IFS=$'\t' read -r address pid workspace live_class; do
+      [[ -z "${used_addresses[$address]:-}" ]] || continue
+      [[ "${live_class,,}" == "${saved_class,,}" && "$workspace" == "$saved_workspace" ]] || continue
+      live_cwd="$(plain_shell_cwd "$pid" 2>/dev/null || true)"
+      if [[ -n "$live_cwd" && "$live_cwd" == "$saved_cwd" ]]; then
+        candidate="$address"
+        break
+      fi
+    done < <(jq -r '.[] | [.address, .pid, .workspace.name, .class] | @tsv' <<<"$clients")
+
+    if [[ -n "$candidate" ]]; then
+      used_addresses[$candidate]=1
+    else
+      missing="$(jq -cn --argjson items "$missing" --argjson item "$saved" '$items + [$item]')"
+    fi
+  done < <(jq -c 'sort_by(.focusHistoryID)[]' <<<"$group")
+  printf '%s' "$missing"
+}
+
 apply_window_state() {
   local saved="$1"
   local address="$2"
@@ -392,19 +530,24 @@ apply_window_state() {
   floating="$(jq -r '.floating // false' <<<"$saved")"
   fullscreen="$(jq -r '.fullscreen // 0' <<<"$saved")"
   pinned="$(jq -r '.pinned // false' <<<"$saved")"
+  x="$(jq -r '.geometry.at[0] // 0' <<<"$saved")"
+  y="$(jq -r '.geometry.at[1] // 0' <<<"$saved")"
+  width="$(jq -r '.geometry.size[0] // 0' <<<"$saved")"
+  height="$(jq -r '.geometry.size[1] // 0' <<<"$saved")"
 
   if [[ "$floating" == true ]]; then
     hyprctl dispatch "hl.dsp.window.float({ action = \"enable\", window = $selector_lua })" >/dev/null || true
-    x="$(jq -r '.geometry.at[0] // 0' <<<"$saved")"
-    y="$(jq -r '.geometry.at[1] // 0' <<<"$saved")"
-    width="$(jq -r '.geometry.size[0] // 0' <<<"$saved")"
-    height="$(jq -r '.geometry.size[1] // 0' <<<"$saved")"
     if ((width > 0 && height > 0)); then
       hyprctl dispatch "hl.dsp.window.resize({ x = $width, y = $height, relative = false, window = $selector_lua })" >/dev/null || true
       hyprctl dispatch "hl.dsp.window.move({ x = $x, y = $y, relative = false, window = $selector_lua })" >/dev/null || true
     fi
   else
     hyprctl dispatch "hl.dsp.window.float({ action = \"disable\", window = $selector_lua })" >/dev/null || true
+    # Launch order recreates the tiled topology; exact pixel resizing restores
+    # the saved split proportions and lets the layout resize sibling windows.
+    if ((width > 0 && height > 0)); then
+      hyprctl dispatch "hl.dsp.window.resize({ x = $width, y = $height, relative = false, window = $selector_lua })" >/dev/null || true
+    fi
   fi
 
   if [[ "$pinned" == true ]]; then
@@ -415,6 +558,54 @@ apply_window_state() {
     1) hyprctl dispatch "hl.dsp.window.fullscreen({ mode = \"maximized\", action = \"enable\", window = $selector_lua })" >/dev/null || true ;;
     2|3) hyprctl dispatch "hl.dsp.window.fullscreen({ mode = \"fullscreen\", action = \"enable\", window = $selector_lua })" >/dev/null || true ;;
   esac
+}
+
+restore_tiled_order() {
+  local saved saved_address address target_x target_y current_x current_y geometry
+  local direction selector_lua attempts original_workspace
+  original_workspace="$(hyprctl activeworkspace -j | jq -r '.name')"
+
+  while IFS= read -r saved; do
+    saved_address="$(jq -r '.address' <<<"$saved")"
+    address="${RESTORED_ADDRESS_BY_SAVED[$saved_address]:-}"
+    [[ -n "$address" ]] || continue
+    target_x="$(jq -r '.geometry.at[0]' <<<"$saved")"
+    target_y="$(jq -r '.geometry.at[1]' <<<"$saved")"
+    selector_lua="$(lua_quote "address:$address")"
+
+    attempts=0
+    while ((attempts < 32)); do
+      geometry="$(hyprctl clients -j | jq -r --arg address "$address" '
+        .[] | select(.address == $address) | [.at[0], .at[1]] | @tsv')"
+      [[ -n "$geometry" ]] || break
+      IFS=$'\t' read -r current_x current_y <<<"$geometry"
+      ((current_x == target_x && current_y == target_y)) && break
+      if ((current_x > target_x)); then direction=l
+      elif ((current_x < target_x)); then direction=r
+      elif ((current_y > target_y)); then direction=u
+      else direction=d
+      fi
+      hyprctl dispatch "hl.dsp.focus({ window = $selector_lua })" >/dev/null || break
+      hyprctl dispatch "hl.dsp.window.swap({ direction = \"$direction\" })" >/dev/null || break
+      ((attempts += 1))
+    done
+  done < <(jq -c '[.clients[] | select(.autoRestore and (.floating | not))]
+    | sort_by(.workspace.id, .geometry.at[1], .geometry.at[0])[]' "$state_file")
+
+  hyprctl dispatch "hl.dsp.focus({ workspace = $(lua_quote "$original_workspace") })" >/dev/null || true
+  return 0
+}
+
+reapply_restored_window_states() {
+  local saved saved_address address
+  while IFS= read -r saved; do
+    saved_address="$(jq -r '.address' <<<"$saved")"
+    address="${RESTORED_ADDRESS_BY_SAVED[$saved_address]:-}"
+    if [[ -n "$address" ]]; then
+      apply_window_state "$saved" "$address"
+    fi
+  done < <(jq -c '.clients[] | select(.autoRestore)' "$state_file")
+  return 0
 }
 
 launch_group() {
@@ -431,7 +622,16 @@ launch_group() {
   launch="$(jq -c '.launch' <<<"$first")"
   expected="$(jq 'length' <<<"$group")"
 
-  if live_has_adapter "$adapter" "$class" "$initial_title"; then
+  if [[ "$adapter" == terminal-shell ]]; then
+    group="$(missing_terminal_shell_group "$group")"
+    expected="$(jq 'length' <<<"$group")"
+    if ((expected == 0)); then
+      printf 'skip     %-18s already restored\n' "$adapter"
+      return 0
+    fi
+    first="$(jq -c '.[0]' <<<"$group")"
+    launch="$(jq -c '.launch' <<<"$first")"
+  elif live_has_adapter "$adapter" "$class" "$initial_title"; then
     printf 'skip     %-18s already running\n' "$adapter"
     return 0
   fi
@@ -442,12 +642,19 @@ launch_group() {
   esac
   while ((launch_attempt < max_launch_attempts)); do
     ((launch_attempt += 1))
-    if ((launch_attempt == 1)); then
-      printf 'launch   %-18s %s\n' "$adapter" "$(jq -r '@sh' <<<"$launch")"
+    if [[ "$adapter" == terminal-shell ]]; then
+      while IFS= read -r launch; do
+        printf 'launch   %-18s %s\n' "$adapter" "$(jq -r '@sh' <<<"$launch")"
+        launch_argv_direct "$adapter" "$launch"
+      done < <(jq -c 'sort_by(.focusHistoryID)[] | .launch' <<<"$group")
     else
-      printf 'retry    %-18s application is now settled\n' "$adapter"
+      if ((launch_attempt == 1)); then
+        printf 'launch   %-18s %s\n' "$adapter" "$(jq -r '@sh' <<<"$launch")"
+      else
+        printf 'retry    %-18s application is now settled\n' "$adapter"
+      fi
+      launch_argv_direct "$adapter" "$launch"
     fi
-    launch_argv_direct "$adapter" "$launch"
 
     attempts=0
     while ((attempts < 100)); do
@@ -492,7 +699,7 @@ launch_group() {
     ((attempts += 1))
   done
 
-  local index=0 saved saved_title workspace address address_selector workspace_lua address_lua current_workspace candidate
+  local index=0 saved saved_address saved_title workspace address address_selector workspace_lua address_lua current_workspace candidate
   local -A used_addresses=()
   while IFS= read -r saved && ((index < address_count)); do
     saved_title="$(jq -r '.title' <<<"$saved")"
@@ -512,6 +719,8 @@ launch_group() {
     fi
     [[ -n "$address" ]] || break
     used_addresses[$address]=1
+    saved_address="$(jq -r '.address' <<<"$saved")"
+    RESTORED_ADDRESS_BY_SAVED[$saved_address]="$address"
     current_workspace="$(hyprctl clients -j | jq -r --arg address "$address" '.[] | select(.address == $address) | .workspace.name')"
     if [[ "$current_workspace" != "$workspace" ]]; then
       address_selector="address:$address"
@@ -554,6 +763,9 @@ restore() {
   while IFS= read -r group; do
     launch_group "$group"
   done < <(jq -c '.[]' <<<"$groups")
+
+  restore_tiled_order
+  reapply_restored_window_states
 
   active="$(jq -r '.activeWorkspace.name // .activeWorkspace.id // "1"' "$state_file")"
   hyprctl dispatch "hl.dsp.focus({ workspace = $(lua_quote "$active") })" >/dev/null || true

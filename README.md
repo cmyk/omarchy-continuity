@@ -12,11 +12,14 @@ This is an early MVP. It currently understands:
 - **Herdr** — Herdr restores its saved panes and exact Codex session.
 - **Chromium** — Chromium restores its own windows and tabs.
 - **1Password** — the locked app window returns without reading vault data.
+- **Desktop apps** — installed applications reopen through validated desktop IDs.
+- **Clean terminals** — idle shells reopen in their saved working directories.
 - **btop** — allow-listed terminal commands are relaunched safely.
 - **Files** — Nautilus reopens a recognizable folder below your home directory.
 
-Plain shell terminals are intentionally not replayed. Re-executing arbitrary
-shell state after login would be surprising and unsafe.
+Clean shell windows are reopened, but their command history is never replayed.
+Terminals running unknown child commands are intentionally skipped because
+re-executing arbitrary shell state after login would be surprising and unsafe.
 
 Restore commands use strict adapter-specific allowlists and are launched as
 argument arrays without implicit shell execution.
@@ -68,8 +71,9 @@ Already-running applications are not duplicated, and an empty desktop never
 overwrites the last useful state. A failure is contained to these units; it
 cannot crash Quickshell or the lock screen.
 
-The snapshot also records tiled/floating state, floating-window geometry,
-pinning, fullscreen mode, and workspace placement. Chromium web apps are
+The snapshot also records tiled/floating state, tiled split proportions,
+floating-window geometry, pinning, fullscreen mode, and workspace placement.
+Chromium web apps are
 restored separately from ordinary Chromium browser windows. Continuity can
 reopen 1Password, but it never reads vault contents or restores unlock state,
 and it replaces potentially identifying 1Password window titles with a fixed
@@ -101,6 +105,6 @@ State is stored at:
   windows.
 - Chromium owns tab restoration; Continuity does not read browser history or
   profile databases.
-- Tiled windows return in their saved launch order, but complex split ratios and
+- Tiled windows return in their saved launch order and saved pixel proportions;
   grouped/tabbed container layouts are not reconstructed yet.
 - A shutdown-aware final snapshot is not part of this first version.

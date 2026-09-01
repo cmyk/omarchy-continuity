@@ -9,6 +9,7 @@ rg -q 'terminal_cwd' "$cli"
 rg -q 'launch_argv_direct' "$cli"
 rg -q 'systemd-run --user --quiet --collect' "$cli"
 rg -q 'chromium-webapp\|onepassword\) max_launch_attempts=2' "$cli"
+rg -q 'tiled split proportions' "$repo_dir/README.md"
 if rg -q 'shell_join_json|hl\.dsp\.exec_cmd' "$cli"; then
   printf '%s\n' 'restore commands must not be converted back into shell strings' >&2
   exit 1
@@ -30,7 +31,7 @@ trap 'rm -rf -- "$tmp_dir"' EXIT
 
 source "$cli"
 capture="$tmp_dir/direct-launch.argv"
-literal_path="$HOME/Project; still-one-argument"
+literal_path="$HOME/Project;"$'\n'"still-one-argument"
 launch="$(jq -cn --arg path "$literal_path" '["nautilus", "--new-window", $path]')"
 PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
   launch_argv_direct files "$launch"
@@ -57,6 +58,86 @@ count="${#captured_argv[@]}"
 [[ ${captured_argv[count-3]} == -- ]]
 [[ ${captured_argv[count-2]} == gtk-launch ]]
 [[ ${captured_argv[count-1]} == 1password ]]
+
+fake_data="$tmp_dir/data"
+mkdir -p "$fake_data/applications"
+printf '%s\n' \
+  '[Desktop Entry]' \
+  'Type=Application' \
+  'Name=Fixture App' \
+  'Exec=/usr/bin/true' \
+  'StartupWMClass=FixtureClass' \
+  > "$fake_data/applications/org.example.Fixture.desktop"
+desktop_id="$(XDG_DATA_HOME="$fake_data" XDG_DATA_DIRS=/nonexistent \
+  desktop_id_for_class FixtureClass)"
+[[ "$desktop_id" == org.example.Fixture ]]
+desktop_classification="$(XDG_DATA_HOME="$fake_data" XDG_DATA_DIRS=/nonexistent \
+  classify_client FixtureClass 999999 'Fixture' 'Fixture')"
+jq -e '
+  .adapter == "desktop-app"
+  and .autoRestore == true
+  and .groupKey == "desktop:org.example.Fixture"
+  and .launch == ["gtk-launch", "org.example.Fixture"]' \
+  <<<"$desktop_classification" >/dev/null
+desktop_launch='["gtk-launch", "org.example.Fixture"]'
+PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
+  XDG_DATA_HOME="$fake_data" XDG_DATA_DIRS=/nonexistent \
+  launch_argv_direct desktop-app "$desktop_launch"
+mapfile -d '' -t captured_argv < "$capture"
+count="${#captured_argv[@]}"
+[[ ${captured_argv[count-3]} == -- ]]
+[[ ${captured_argv[count-2]} == gtk-launch ]]
+[[ ${captured_argv[count-1]} == org.example.Fixture ]]
+
+if (PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
+  XDG_DATA_HOME="$fake_data" XDG_DATA_DIRS=/nonexistent \
+  launch_argv_direct desktop-app '["gtk-launch", "../unsafe"]' 2>/dev/null); then
+  printf '%s\n' 'unsafe desktop ID was accepted' >&2
+  exit 1
+fi
+printf '%s\n' \
+  '[Desktop Entry]' \
+  'Type=Application' \
+  'Hidden=true' \
+  'Exec=/usr/bin/true' \
+  > "$fake_data/applications/org.example.Hidden.desktop"
+if (PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
+  XDG_DATA_HOME="$fake_data" XDG_DATA_DIRS=/nonexistent \
+  launch_argv_direct desktop-app '["gtk-launch", "org.example.Hidden"]' 2>/dev/null); then
+  printf '%s\n' 'hidden desktop entry was accepted' >&2
+  exit 1
+fi
+
+plain_shell_cwd() { printf '%s' "$HOME/Project"; }
+shell_classification="$(classify_client foot 999999 'shell' 'foot')"
+jq -e --arg home "$HOME" '
+  .adapter == "terminal-shell"
+  and .autoRestore == true
+  and .groupKey == "terminal:shell:foot"
+  and .cwd == ($home + "/Project")
+  and .launch == ["xdg-terminal-exec", "--dir=" + $home + "/Project"]' \
+  <<<"$shell_classification" >/dev/null
+shell_launch="$(jq -cn --arg dir "--dir=$HOME/Project" '["xdg-terminal-exec", $dir]')"
+PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
+  launch_argv_direct terminal-shell "$shell_launch"
+mapfile -d '' -t captured_argv < "$capture"
+count="${#captured_argv[@]}"
+[[ ${captured_argv[count-3]} == -- ]]
+[[ ${captured_argv[count-2]} == xdg-terminal-exec ]]
+[[ ${captured_argv[count-1]} == "--dir=$HOME/Project" ]]
+
+hyprctl() {
+  printf '%s\n' '[{"address":"0xlive","pid":111,"class":"foot","workspace":{"name":"5"}}]'
+}
+shell_group="$(jq -cn --arg home "$HOME" '[
+  {class:"foot", cwd:($home + "/Project"), workspace:{name:"5"}, focusHistoryID:0,
+   launch:["xdg-terminal-exec", "--dir=" + $home + "/Project"]},
+  {class:"foot", cwd:($home + "/Project"), workspace:{name:"6"}, focusHistoryID:1,
+   launch:["xdg-terminal-exec", "--dir=" + $home + "/Project"]}
+]')"
+missing_shells="$(missing_terminal_shell_group "$shell_group")"
+jq -e 'length == 1 and .[0].workspace.name == "6"' <<<"$missing_shells" >/dev/null
+unset -f plain_shell_cwd hyprctl
 
 tampered='["omarchy-launch-browser", "--restore-last-session", "; touch /tmp/not-allowed"]'
 if (PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
