@@ -86,6 +86,7 @@ classify_client() {
   local class="$1"
   local pid="$2"
   local title="$3"
+  local initial_title="$4"
   local cwd tree adapter auto_restore group_key launch notes folder
 
   cwd="$HOME"
@@ -98,11 +99,19 @@ classify_client() {
 
   case "${class,,}" in
     chromium|google-chrome|google-chrome-stable)
-      adapter="chromium"
-      auto_restore=true
-      group_key="browser:chromium"
-      launch='["omarchy-launch-browser", "--restore-last-session"]'
-      notes="Chromium restores its own windows and tabs"
+      if [[ "$initial_title" == "x.com_/" ]]; then
+        adapter="chromium-webapp"
+        auto_restore=true
+        group_key="webapp:https://x.com/"
+        launch='["omarchy-launch-webapp", "https://x.com/"]'
+        notes="Restores the X web app independently from browser tabs"
+      else
+        adapter="chromium"
+        auto_restore=true
+        group_key="browser:chromium"
+        launch='["omarchy-launch-browser", "--restore-last-session"]'
+        notes="Chromium restores its own windows and tabs"
+      fi
       ;;
     org.gnome.nautilus|nautilus)
       adapter="files"
@@ -152,7 +161,7 @@ classify_client() {
 
 snapshot() {
   local output="$DEFAULT_STATE_FILE"
-  local clients active tmp manifest='[]' client class pid title classification item count
+  local clients active tmp manifest='[]' client class pid title initial_title classification item count
 
   while (($#)); do
     case "$1" in
@@ -176,7 +185,8 @@ snapshot() {
     pid="$(jq -r '.pid // 0' <<<"$client")"
     [[ "$pid" =~ ^[0-9]+$ ]] && ((pid > 0)) || continue
     title="$(jq -r '.title // ""' <<<"$client")"
-    classification="$(classify_client "$class" "$pid" "$title")"
+    initial_title="$(jq -r '.initialTitle // ""' <<<"$client")"
+    classification="$(classify_client "$class" "$pid" "$title" "$initial_title")"
     item="$(jq -cn --argjson client "$client" --argjson classification "$classification" '
       {
         address: ($client.address // ""),
@@ -265,11 +275,17 @@ plan() {
 live_has_adapter() {
   local adapter="$1"
   local class="$2"
+  local initial_title="${3:-}"
   local clients pid tree
   clients="$(hyprctl clients -j)"
 
   case "$adapter" in
-    chromium) jq -e --arg class "$class" 'any(.[]; ((.class // "") | ascii_downcase) == ($class | ascii_downcase))' <<<"$clients" >/dev/null ;;
+    chromium) jq -e --arg class "$class" 'any(.[];
+      (((.class // "") | ascii_downcase) == ($class | ascii_downcase))
+      and ((.initialTitle // "") != "x.com_/"))' <<<"$clients" >/dev/null ;;
+    chromium-webapp) jq -e --arg class "$class" --arg initialTitle "$initial_title" 'any(.[];
+      (((.class // "") | ascii_downcase) == ($class | ascii_downcase))
+      and ((.initialTitle // "") == $initialTitle))' <<<"$clients" >/dev/null ;;
     files) jq -e 'any(.[]; (.class // "") == "org.gnome.Nautilus")' <<<"$clients" >/dev/null ;;
     herdr|terminal-command)
       while IFS= read -r pid; do
@@ -306,18 +322,19 @@ new_addresses_for_class() {
 
 launch_group() {
   local group="$1"
-  local first adapter class launch command launch_workspace command_lua workspace_lua
-  local expected before='[]' address_count=0 attempts=0
+  local first adapter class initial_title launch command launch_workspace command_lua workspace_lua
+  local expected before='[]' address_count=0 attempts=0 title_matches=0 live_clients
   local -a addresses=()
 
   first="$(jq -c '.[0]' <<<"$group")"
   adapter="$(jq -r '.adapter' <<<"$first")"
   class="$(jq -r '.class' <<<"$first")"
+  initial_title="$(jq -r '.initialTitle // ""' <<<"$first")"
   launch="$(jq -c '.launch' <<<"$first")"
   launch_workspace="$(jq -r '.workspace.name' <<<"$first")"
   expected="$(jq 'length' <<<"$group")"
 
-  if live_has_adapter "$adapter" "$class"; then
+  if live_has_adapter "$adapter" "$class" "$initial_title"; then
     printf 'skip     %-18s already running\n' "$adapter"
     return 0
   fi
@@ -342,10 +359,43 @@ launch_group() {
     return 0
   fi
 
-  local index=0 saved workspace address address_selector workspace_lua address_lua current_workspace
+  # Browser windows often appear before their restored page titles. Give exact
+  # title matching a short chance so creation order does not swap workspaces.
+  attempts=0
+  while ((attempts < 50)); do
+    live_clients="$(hyprctl clients -j)"
+    title_matches="$(jq -n \
+      --argjson saved "$group" \
+      --argjson live "$live_clients" \
+      --argjson addresses "$(printf '%s\n' "${addresses[@]}" | jq -R . | jq -s .)" '
+      [$saved[] as $s | $live[]
+        | select((.address as $a | $addresses | index($a)) != null)
+        | select((.title // "") == $s.title)] | length')"
+    ((title_matches >= expected)) && break
+    sleep 0.1
+    ((attempts += 1))
+  done
+
+  local index=0 saved saved_title workspace address address_selector workspace_lua address_lua current_workspace candidate
+  local -A used_addresses=()
   while IFS= read -r saved && ((index < address_count)); do
+    saved_title="$(jq -r '.title' <<<"$saved")"
     workspace="$(jq -r '.workspace.name' <<<"$saved")"
-    address="${addresses[$index]}"
+    live_clients="$(hyprctl clients -j)"
+    candidate="$(jq -r --arg title "$saved_title" \
+      --argjson addresses "$(printf '%s\n' "${addresses[@]}" | jq -R . | jq -s .)" '
+      .[] | select((.address as $a | $addresses | index($a)) != null)
+      | select((.title // "") == $title) | .address' <<<"$live_clients" | head -n 1)"
+    if [[ -n "$candidate" && -z "${used_addresses[$candidate]:-}" ]]; then
+      address="$candidate"
+    else
+      address=""
+      for candidate in "${addresses[@]}"; do
+        if [[ -z "${used_addresses[$candidate]:-}" ]]; then address="$candidate"; break; fi
+      done
+    fi
+    [[ -n "$address" ]] || break
+    used_addresses[$address]=1
     current_workspace="$(hyprctl clients -j | jq -r --arg address "$address" '.[] | select(.address == $address) | .workspace.name')"
     if [[ "$current_workspace" != "$workspace" ]]; then
       address_selector="address:$address"
