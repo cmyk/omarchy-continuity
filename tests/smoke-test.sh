@@ -8,7 +8,7 @@ bash -n "$cli" "$repo_dir/install.sh" "$repo_dir/uninstall.sh"
 rg -q 'terminal_cwd' "$cli"
 rg -q 'launch_argv_direct' "$cli"
 rg -q 'systemd-run --user --quiet --collect' "$cli"
-rg -q '\[\[ "\$adapter" == chromium-webapp \]\] && max_launch_attempts=2' "$cli"
+rg -q 'chromium-webapp\|onepassword\) max_launch_attempts=2' "$cli"
 if rg -q 'shell_join_json|hl\.dsp\.exec_cmd' "$cli"; then
   printf '%s\n' 'restore commands must not be converted back into shell strings' >&2
   exit 1
@@ -41,6 +41,22 @@ count="${#captured_argv[@]}"
 [[ ${captured_argv[count-3]} == nautilus ]]
 [[ ${captured_argv[count-2]} == --new-window ]]
 [[ ${captured_argv[count-1]} == "$literal_path" ]]
+
+onepassword_classification="$(classify_client 1password 1 '1Password' '1Password')"
+jq -e '
+  .adapter == "onepassword"
+  and .autoRestore == true
+  and .groupKey == "app:1password"
+  and .launch == ["gtk-launch", "1password"]' \
+  <<<"$onepassword_classification" >/dev/null
+onepassword_launch='["gtk-launch", "1password"]'
+PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
+  launch_argv_direct onepassword "$onepassword_launch"
+mapfile -d '' -t captured_argv < "$capture"
+count="${#captured_argv[@]}"
+[[ ${captured_argv[count-3]} == -- ]]
+[[ ${captured_argv[count-2]} == gtk-launch ]]
+[[ ${captured_argv[count-1]} == 1password ]]
 
 tampered='["omarchy-launch-browser", "--restore-last-session", "; touch /tmp/not-allowed"]'
 if (PATH="$repo_dir/tests/fakes:$PATH" REOMARCHY_TEST_CAPTURE="$capture" \
@@ -97,7 +113,9 @@ jq -e '
   .schemaVersion == 1
   and (.capturedAt | type == "string")
   and (.activeWorkspace.id | type == "number")
-  and ([.clients[] | select(.autoRestore)] | length) > 0' "$state" >/dev/null
+  and ([.clients[] | select(.autoRestore)] | length) > 0
+  and all(.clients[] | select(.adapter == "onepassword");
+    .title == "1Password" and .initialTitle == "1Password")' "$state" >/dev/null
 XDG_STATE_HOME="$tmp_dir" "$cli" plan >/dev/null
 XDG_STATE_HOME="$tmp_dir" "$cli" restore >/dev/null
 
