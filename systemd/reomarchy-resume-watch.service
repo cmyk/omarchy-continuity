@@ -1,0 +1,14 @@
+[Unit]
+Description=Continuity for Omarchy: refresh agent connections after resume
+Documentation=https://github.com/cmyk/omarchy-continuity
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/libexec/reomarchy-resume-watch watch
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=graphical-session.target
