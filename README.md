@@ -83,12 +83,18 @@ During automatic login restoration, Continuity uses Omarchy's native OSD to
 show progress and completion feedback. This is an IPC call to the existing
 shell, not plugin code loaded into Quickshell.
 
+Continuity also watches for suspend and hibernation resumes. Once networking
+returns, it relaunches idle Codex agents inside their existing Herdr panes with
+the same session IDs. This avoids waiting for a preserved WebSocket to time out.
+Agents that were working or waiting for input at sleep time are left untouched.
+
 Check their status with:
 
 ```bash
 systemctl --user status reomarchy-session-restore.timer
 systemctl --user status reomarchy-session-restore.service
 systemctl --user status reomarchy-session-snapshot.timer
+systemctl --user status reomarchy-resume-watch.service
 ```
 
 Uninstall with `./uninstall.sh`. The saved session is deliberately retained.

@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly RESUME_WATCH_NAME="reomarchy-resume-watch"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  reomarchy-resume-watch watch
+  reomarchy-resume-watch refresh
+
+Commands:
+  watch    Listen for system resume and refresh idle Codex sessions in Herdr.
+  refresh  Run one refresh pass immediately.
+EOF
+}
+
+log() {
+  printf '%s: %s\n' "$RESUME_WATCH_NAME" "$*"
+}
+
+herdr_call() {
+  herdr "$@"
+}
+
+network_ready() {
+  if command -v nm-online >/dev/null 2>&1; then
+    nm-online -q --timeout=30
+  else
+    # Herdr itself is local, so a missing network helper must not make the
+    # watcher fail permanently. Codex will connect as soon as networking is up.
+    sleep 3
+  fi
+}
+
+terminate_codex() {
+  local pid="$1"
+
+  if [[ -n "${REOMARCHY_TEST_CAPTURE:-}" ]]; then
+    printf 'terminate\t%s\n' "$pid" >>"$REOMARCHY_TEST_CAPTURE"
+    return 0
+  fi
+
+  [[ -r "/proc/$pid/status" && -r "/proc/$pid/exe" ]] || return 1
+  [[ "$(awk '/^Uid:/{print $2}' "/proc/$pid/status")" == "$(id -u)" ]] || return 1
+  [[ "$(basename -- "$(readlink -f "/proc/$pid/exe")")" == codex ]] || return 1
+  kill -TERM "$pid"
+}
+
+restart_idle_codex_agent() {
+  local saved="$1"
+  local pane session current process_info pid attempts command
+
+  pane="$(jq -r '.pane_id' <<<"$saved")"
+  session="$(jq -r '.agent_session.value' <<<"$saved")"
+  [[ "$pane" =~ ^[A-Za-z0-9:_-]+$ ]] || return 0
+  [[ "$session" =~ ^[0-9a-fA-F-]{36}$ ]] || return 0
+
+  # Recheck immediately before terminating the process. A user may have sent a
+  # prompt since the first list call; active or blocked work must be preserved.
+  current="$(herdr_call agent get "$pane" 2>/dev/null || true)"
+  jq -e --arg session "$session" '
+    .result.agent.agent == "codex"
+    and (.result.agent.agent_status | IN("idle", "done"))
+    and .result.agent.agent_session.kind == "id"
+    and .result.agent.agent_session.value == $session' <<<"$current" >/dev/null 2>&1 \
+    || return 0
+
+  process_info="$(herdr_call pane process-info --pane "$pane" 2>/dev/null || true)"
+  pid="$(jq -r '
+    [.result.process_info.foreground_processes[]?
+      | select(.name == "codex") | .pid] | first // empty' <<<"$process_info")"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  terminate_codex "$pid" || {
+    log "could not stop Codex safely in $pane; leaving it untouched"
+    return 0
+  }
+
+  if [[ -z "${REOMARCHY_TEST_CAPTURE:-}" ]]; then
+    attempts=0
+    while ((attempts < 50)); do
+      process_info="$(herdr_call pane process-info --pane "$pane" 2>/dev/null || true)"
+      if ! jq -e 'any(.result.process_info.foreground_processes[]?; .name == "codex")' \
+        <<<"$process_info" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.1
+      ((attempts += 1))
+    done
+    ((attempts < 50)) || {
+      log "Codex did not exit promptly in $pane; not relaunching"
+      return 0
+    }
+  fi
+
+  command="exec codex resume $session"
+  herdr_call pane run "$pane" "$command" >/dev/null
+  log "refreshed idle Codex session in $pane"
+}
+
+refresh_agents() {
+  local agents saved
+
+  command -v jq >/dev/null 2>&1 || return 0
+  command -v herdr >/dev/null 2>&1 || return 0
+  network_ready || log "network did not report ready; refreshing connections anyway"
+
+  agents="$(herdr_call agent list 2>/dev/null || true)"
+  jq -e '.result.agents | type == "array"' <<<"$agents" >/dev/null 2>&1 || return 0
+
+  while IFS= read -r saved; do
+    restart_idle_codex_agent "$saved"
+  done < <(jq -c '
+    .result.agents[]
+    | select(.agent == "codex")
+    | select(.agent_status | IN("idle", "done"))
+    | select(.agent_session.kind == "id")' <<<"$agents")
+}
+
+watch_resume() {
+  command -v gdbus >/dev/null 2>&1 || {
+    log "gdbus is unavailable; resume watching is disabled"
+    return 0
+  }
+  command -v stdbuf >/dev/null 2>&1 || {
+    log "stdbuf is unavailable; resume watching is disabled"
+    return 0
+  }
+
+  stdbuf -oL gdbus monitor --system --dest org.freedesktop.login1 \
+    --object-path /org/freedesktop/login1 \
+    | while IFS= read -r line; do
+        handle_sleep_signal_line "$line"
+      done
+}
+
+handle_sleep_signal_line() {
+  case "$1" in
+    *".PrepareForSleep (false,)"*) refresh_agents || true ;;
+  esac
+}
+
+main() {
+  case "${1:-}" in
+    watch) watch_resume ;;
+    refresh) refresh_agents ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; exit 1 ;;
+  esac
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

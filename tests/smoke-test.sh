@@ -3,8 +3,9 @@ set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cli="$repo_dir/bin/reomarchy-session"
+resume_watch="$repo_dir/bin/reomarchy-resume-watch"
 
-bash -n "$cli" "$repo_dir/install.sh" "$repo_dir/uninstall.sh"
+bash -n "$cli" "$resume_watch" "$repo_dir/install.sh" "$repo_dir/uninstall.sh"
 rg -q 'terminal_cwd' "$cli"
 rg -q 'launch_argv_direct' "$cli"
 rg -q 'systemd-run --user --quiet --collect' "$cli"
@@ -18,8 +19,9 @@ verify_output="$(systemd-analyze --user verify \
   "$repo_dir/systemd/reomarchy-session-restore.service" \
   "$repo_dir/systemd/reomarchy-session-restore.timer" \
   "$repo_dir/systemd/reomarchy-session-snapshot.service" \
-  "$repo_dir/systemd/reomarchy-session-snapshot.timer" 2>&1 || true)"
-unexpected_verify_output="$(grep -v 'Command .*/\.local/libexec/reomarchy-session is not executable: No such file or directory' \
+  "$repo_dir/systemd/reomarchy-session-snapshot.timer" \
+  "$repo_dir/systemd/reomarchy-resume-watch.service" 2>&1 || true)"
+unexpected_verify_output="$(grep -Ev 'Command .*/\.local/libexec/reomarchy-(session|resume-watch) is not executable: No such file or directory' \
   <<<"$verify_output" || true)"
 [[ -z "$unexpected_verify_output" ]] || {
   printf '%s\n' "$unexpected_verify_output" >&2
@@ -199,5 +201,33 @@ jq -e '
     .title == "1Password" and .initialTitle == "1Password")' "$state" >/dev/null
 XDG_STATE_HOME="$tmp_dir" "$cli" plan >/dev/null
 XDG_STATE_HOME="$tmp_dir" "$cli" restore >/dev/null
+
+source "$resume_watch"
+resume_capture="$tmp_dir/resume-capture"
+fake_agents='{"id":"test","result":{"agents":[
+  {"agent":"codex","agent_status":"idle","pane_id":"w1:p1","agent_session":{"kind":"id","value":"11111111-1111-1111-1111-111111111111"}},
+  {"agent":"codex","agent_status":"working","pane_id":"w1:p2","agent_session":{"kind":"id","value":"22222222-2222-2222-2222-222222222222"}},
+  {"agent":"claude","agent_status":"idle","pane_id":"w1:p3","agent_session":{"kind":"id","value":"33333333-3333-3333-3333-333333333333"}}
+]}}'
+herdr_call() {
+  case "$1:$2" in
+    agent:list) printf '%s\n' "$fake_agents" ;;
+    agent:get) printf '%s\n' '{"result":{"agent":{"agent":"codex","agent_status":"idle","agent_session":{"kind":"id","value":"11111111-1111-1111-1111-111111111111"}}}}' ;;
+    pane:process-info) printf '%s\n' '{"result":{"process_info":{"foreground_processes":[{"name":"codex","pid":4242}]}}}' ;;
+    pane:run) printf 'run\t%s\t%s\n' "$3" "$4" >>"$REOMARCHY_TEST_CAPTURE" ;;
+    *) return 1 ;;
+  esac
+}
+network_ready() { :; }
+REOMARCHY_TEST_CAPTURE="$resume_capture" refresh_agents >/dev/null
+grep -Fqx $'terminate\t4242' "$resume_capture"
+grep -Fqx $'run\tw1:p1\texec codex resume 11111111-1111-1111-1111-111111111111' "$resume_capture"
+[[ $(wc -l <"$resume_capture") == 2 ]]
+
+refresh_agents() { printf 'resume-signal\n' >>"$REOMARCHY_TEST_CAPTURE"; }
+handle_sleep_signal_line '/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (true,)'
+REOMARCHY_TEST_CAPTURE="$resume_capture" \
+  handle_sleep_signal_line '/org/freedesktop/login1: org.freedesktop.login1.Manager.PrepareForSleep (false,)'
+[[ $(tail -n 1 "$resume_capture") == resume-signal ]]
 
 printf 'smoke test passed\n'
